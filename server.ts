@@ -132,6 +132,11 @@ app.post('/api/auth/login', (req, res) => {
   }
 });
 
+// GET status handler for /api/auth/login
+app.get('/api/auth/login', (_req, res) => {
+  return res.json({ status: 'ok', endpoint: '/api/auth/login', method: 'POST required' });
+});
+
 // Firebase / Google Auth Sync
 app.post('/api/auth/google-sync', (req, res) => {
   try {
@@ -507,6 +512,7 @@ async function startServer() {
   // Mounted BEFORE Vite or static middleware so missing API calls return JSON error, not HTML
   app.all('/api/*', (req, res) => {
     res.status(404).json({
+      ok: false,
       error: `API endpoint '${req.method} ${req.path}' not found on backend server`,
       path: req.path,
       method: req.method,
@@ -516,16 +522,19 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: 'spa',
+      appType: 'custom',
     });
     app.use(vite.middlewares);
 
     // Catch-all route to serve and transform index.html for client-side routing on reload
     app.use('*', async (req, res, next) => {
-      const url = req.originalUrl;
-      // Skip API and uploads routes
+      const url = req.originalUrl || req.url || '';
+      // Strictly prevent API and uploads routes from returning HTML
       if (url.startsWith('/api') || url.startsWith('/uploads')) {
-        return next();
+        return res.status(404).json({
+          ok: false,
+          error: `Endpoint '${url}' not found`,
+        });
       }
       try {
         const indexPath = path.resolve(process.cwd(), 'index.html');
