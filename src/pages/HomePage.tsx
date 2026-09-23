@@ -53,7 +53,16 @@ export const HomePage: React.FC = () => {
 
     if (item.payment_type === 'free' || item.isUnlocked) {
       if (item.type === 'document') {
-        window.location.href = downloadUrl;
+        if (item.file_url && item.file_url.startsWith('data:')) {
+          const a = document.createElement('a');
+          a.href = item.file_url;
+          a.download = item.file_name || `${item.title.replace(/\s+/g, '_')}.pdf`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } else {
+          window.location.href = downloadUrl;
+        }
       } else if (item.website_url) {
         window.open(item.website_url, '_blank', 'noopener,noreferrer');
       }

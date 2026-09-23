@@ -183,8 +183,8 @@ Please verify my payment. Screenshot attached.`;
                       itemType === 'document' ? (
                         <a
                           id={`download-order-${order.id}`}
-                          href={`${getApiBaseUrl()}/api/download/${order.item_id}?userId=${user.id}`}
-                          download
+                          href={order.item?.file_url?.startsWith('data:') ? order.item.file_url : `${getApiBaseUrl()}/api/download/${order.item_id}?userId=${user.id}`}
+                          download={order.item?.file_name || 'document.pdf'}
                           className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-xl shadow-xs flex items-center gap-2 transition-colors cursor-pointer"
                         >
                           <Download className="w-4 h-4" />
