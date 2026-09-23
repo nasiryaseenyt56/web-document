@@ -16,8 +16,13 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ onOpenAuthModal }) => {
-  const { user, admin, logoutUser, userOrders, firebaseUser } = useAuth();
+  const { user, admin, logoutUser, logoutAdmin, userOrders, firebaseUser } = useAuth();
   const location = useLocation();
+
+  const handleLogout = async () => {
+    logoutAdmin();
+    await logoutUser();
+  };
 
   const verifiedCount = userOrders.filter(o => o.status === 'verified').length;
   const pendingCount = userOrders.filter(o => o.status === 'pending').length;
@@ -88,10 +93,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuthModal }) => {
               <Link
                 to="/admin"
                 id="nav-admin-dashboard-link"
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 flex items-center gap-1.5 transition-colors"
+                className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1.5 shadow-sm transition-all"
               >
-                <ShieldCheck className="w-4 h-4 text-amber-600" />
+                <ShieldCheck className="w-4 h-4 text-white" />
                 <span>Admin Portal</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               </Link>
             )}
 
@@ -108,12 +114,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuthModal }) => {
                     className="w-8 h-8 rounded-full border border-slate-200 object-cover shadow-sm"
                   />
                 ) : (
-                  <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center text-xs font-bold">
-                    {user.name.charAt(0).toUpperCase()}
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold border ${
+                    admin ? 'bg-amber-100 text-amber-900 border-amber-300' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  }`}>
+                    {admin ? '👑' : user.name.charAt(0).toUpperCase()}
                   </div>
                 )}
                 <div className="hidden md:flex flex-col text-right">
-                  <span className="text-xs font-semibold text-slate-900 leading-tight">
+                  <span className="text-xs font-semibold text-slate-900 leading-tight flex items-center justify-end gap-1">
+                    {admin && <span className="text-[10px] bg-amber-100 text-amber-800 px-1 py-0.2 rounded font-bold">Admin</span>}
                     {user.name}
                   </span>
                   <span className="text-[11px] text-slate-500 leading-tight">
@@ -123,7 +132,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuthModal }) => {
                 <button
                   type="button"
                   id="user-logout-btn"
-                  onClick={logoutUser}
+                  onClick={handleLogout}
                   title="Log out"
                   className="p-2 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                 >

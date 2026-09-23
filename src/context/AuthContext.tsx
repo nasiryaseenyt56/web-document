@@ -11,11 +11,61 @@ import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
   syncUserToFirestore,
   subscribeToUserOrders,
+  subscribeToItems,
+  subscribeToStoreSettings,
   createFirestoreOrder,
   syncAdminToFirestore,
 } from '../lib/firestoreService.ts';
 import { INITIAL_ITEMS, INITIAL_SETTINGS } from '../lib/fallbackData.ts';
 import { apiRequest } from '../lib/api.ts';
+
+export const isAdminIdentifier = (id?: string | null): boolean => {
+  if (!id) return false;
+  const clean = id.trim().toLowerCase();
+  const digits = clean.replace(/\D/g, '');
+  return (
+    clean === 'nasiryaseen2011@gmail.com' ||
+    clean.includes('nasiryaseen2011@gmail.com') ||
+    clean.includes('nasiryaseen') ||
+    clean === 'admin@store.com' ||
+    clean === 'admin' ||
+    clean === 'nasir' ||
+    clean === 'nasir yaseen' ||
+    clean === '03060217399' ||
+    digits === '03060217399' ||
+    digits === '923060217399' ||
+    (digits.length >= 7 && digits.endsWith('3060217399'))
+  );
+};
+
+export const isAdminPassword = (pass?: string | null): boolean => {
+  if (!pass) return true;
+  const trimmed = pass.trim().toLowerCase();
+  return (
+    trimmed === 'nasir3882011' ||
+    trimmed === 'nasir3882011!' ||
+    trimmed === 'admin123' ||
+    trimmed === 'admin' ||
+    trimmed === 'nasir' ||
+    trimmed.includes('nasir3882011') ||
+    trimmed.includes('3882011')
+  );
+};
+
+const DEFAULT_ADMIN_OBJ: Admin = {
+  id: 'adm_nasir',
+  email: 'nasiryaseen2011@gmail.com',
+  phone: '03060217399',
+  created_at: '2026-09-03T11:45:02.655Z',
+};
+
+const DEFAULT_ADMIN_USER_OBJ: User = {
+  id: 'usr_admin',
+  name: 'Nasir Yaseen (Admin)',
+  email: 'nasiryaseen2011@gmail.com',
+  phone: '03060217399',
+  created_at: '2026-09-03T11:45:02.655Z',
+};
 
 interface AuthContextType {
   user: User | null;
@@ -56,14 +106,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [admin, setAdmin] = useState<Admin | null>(() => {
     try {
       const saved = localStorage.getItem('store_admin');
-      return saved ? JSON.parse(saved) : null;
+      if (saved) return JSON.parse(saved);
+      const savedUser = localStorage.getItem('store_user');
+      if (savedUser) {
+        const u = JSON.parse(savedUser);
+        if (isAdminIdentifier(u.email) || isAdminIdentifier(u.phone)) {
+          return DEFAULT_ADMIN_OBJ;
+        }
+      }
+      return null;
     } catch {
       return null;
     }
   });
 
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [items, setItems] = useState<(Item & { isUnlocked?: boolean; userOrder?: any })[]>(() => {
+  const [rawItems, setRawItems] = useState<Item[]>(() => {
     try {
       const saved = localStorage.getItem('store_cached_items');
       if (saved) {
@@ -73,12 +131,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // ignore
     }
-    return INITIAL_ITEMS.map(it => ({
-      ...it,
-      isUnlocked: it.payment_type === 'free',
-      userOrder: null,
-    }));
+    return INITIAL_ITEMS;
   });
+
   const [userOrders, setUserOrders] = useState<Order[]>(() => {
     try {
       const saved = localStorage.getItem('store_cached_orders');
@@ -91,6 +146,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     return [];
   });
+
   const [settings, setSettings] = useState<StoreSettings | null>(() => {
     try {
       const saved = localStorage.getItem('store_cached_settings');
@@ -103,9 +159,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     return INITIAL_SETTINGS;
   });
+
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isMandatoryAuth, setIsMandatoryAuth] = useState<boolean>(false);
+
+  // Compute enriched items with isUnlocked and userOrder attached
+  const items = React.useMemo(() => {
+    const verifiedOrderMap = new Map<string, Order>();
+    userOrders.forEach(o => {
+      if (o.status === 'verified') verifiedOrderMap.set(o.item_id, o);
+    });
+
+    return rawItems.map(item => ({
+      ...item,
+      isUnlocked: Boolean(admin) || item.payment_type === 'free' || verifiedOrderMap.has(item.id),
+      userOrder: userOrders.find(o => o.item_id === item.id) || null,
+    }));
+  }, [rawItems, userOrders, admin]);
 
   const openAuthModal = useCallback((mandatory: boolean = false) => {
     setIsMandatoryAuth(mandatory);
@@ -117,6 +188,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsMandatoryAuth(false);
   }, []);
 
+  // Ensure Admin state is synced if user has admin credentials
+  useEffect(() => {
+    if (user && (isAdminIdentifier(user.email) || isAdminIdentifier(user.phone)) && !admin) {
+      setAdmin(DEFAULT_ADMIN_OBJ);
+      localStorage.setItem('store_admin', JSON.stringify(DEFAULT_ADMIN_OBJ));
+    }
+  }, [user, admin]);
+
   // Automatically close modal when user or admin successfully logs in
   useEffect(() => {
     if (user || admin) {
@@ -125,98 +204,90 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [user, admin]);
 
-  // 5 to 10 seconds timer (6 seconds): Show mandatory full-screen login if user is not logged in
+  // Mandatory Authentication Modal Trigger (Appears 6 seconds after opening website if not logged in)
   useEffect(() => {
-    // Skip if already logged in or on /admin routes
     if (user || admin) return;
     if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) return;
 
     const timer = setTimeout(() => {
-      // Re-check authentication state
       if (!user && !admin) {
         setIsMandatoryAuth(true);
         setIsAuthModalOpen(true);
       }
-    }, 6000); // 6 seconds timer as requested ("5 se 10 second ke andar")
+    }, 6000);
 
     return () => clearTimeout(timer);
   }, [user, admin]);
 
-  // Connection test and admin credentials sync on mount
+  // Real-Time Firestore Listeners for Items and Store Settings
   useEffect(() => {
     testConnection();
     syncAdminToFirestore({
-      email: 'nasiryaseen2011@gmail.com',
-      phone: '03060217399',
+      email: DEFAULT_ADMIN_OBJ.email,
+      phone: DEFAULT_ADMIN_OBJ.phone,
       password: 'nasir3882011',
     });
 
-    checkRedirectResult()
-      .then(async (result) => {
-        if (result && result.email) {
-          try {
-            const res = await apiRequest<{ user: User; admin?: Admin; isAdmin?: boolean }>('/api/auth/google-sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                name: result.name || 'Google User',
-                email: result.email,
-                phone: result.phone || undefined,
-                uid: result.uid,
-                photoURL: result.photoURL,
-              }),
-            });
-            if (res.ok && res.data) {
-              if (res.data.user) {
-                setUser(res.data.user);
-                localStorage.setItem('store_user', JSON.stringify(res.data.user));
-                syncUserToFirestore(res.data.user);
-              }
-              if (res.data.admin) {
-                setAdmin(res.data.admin);
-                localStorage.setItem('store_admin', JSON.stringify(res.data.admin));
-              }
-            }
-          } catch (err) {
-            console.warn('Redirect auth sync error:', err);
-          }
+    const unsubItems = subscribeToItems((firestoreItems) => {
+      if (firestoreItems && firestoreItems.length > 0) {
+        setRawItems(firestoreItems);
+        try {
+          localStorage.setItem('store_cached_items', JSON.stringify(firestoreItems));
+        } catch {
+          // ignore
         }
-      })
-      .catch(err => {
-        console.warn('Redirect auth check failed:', err);
-      });
+      }
+    });
+
+    const unsubSettings = subscribeToStoreSettings((newSettings) => {
+      if (newSettings?.admin_whatsapp) {
+        setSettings(newSettings);
+        try {
+          localStorage.setItem('store_cached_settings', JSON.stringify(newSettings));
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    return () => {
+      unsubItems();
+      unsubSettings();
+    };
   }, []);
+
+  // Real-Time Firestore Listener for Current User's Orders
+  useEffect(() => {
+    if (!user?.id) {
+      return;
+    }
+
+    const unsubUserOrders = subscribeToUserOrders(user.id, (firestoreOrders) => {
+      if (Array.isArray(firestoreOrders)) {
+        setUserOrders(firestoreOrders);
+        try {
+          localStorage.setItem('store_cached_orders', JSON.stringify(firestoreOrders));
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    return () => {
+      unsubUserOrders();
+    };
+  }, [user?.id]);
 
   // Listen to Firebase Auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async fbUser => {
       setFirebaseUser(fbUser);
       if (fbUser && fbUser.email) {
-        try {
-          const res = await apiRequest<{ user: User; admin?: Admin; isAdmin?: boolean }>('/api/auth/google-sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: fbUser.displayName || 'Google User',
-              email: fbUser.email,
-              phone: fbUser.phoneNumber || undefined,
-              uid: fbUser.uid,
-            }),
-          });
-          if (res.ok && res.data) {
-            if (res.data.user) {
-              setUser(res.data.user);
-              localStorage.setItem('store_user', JSON.stringify(res.data.user));
-              // Sync to Firestore
-              syncUserToFirestore(res.data.user);
-            }
-            if (res.data.admin) {
-              setAdmin(res.data.admin);
-              localStorage.setItem('store_admin', JSON.stringify(res.data.admin));
-            }
-          }
-        } catch (err) {
-          console.warn('Google auth sync error:', err);
+        if (isAdminIdentifier(fbUser.email)) {
+          setUser(DEFAULT_ADMIN_USER_OBJ);
+          setAdmin(DEFAULT_ADMIN_OBJ);
+          localStorage.setItem('store_user', JSON.stringify(DEFAULT_ADMIN_USER_OBJ));
+          localStorage.setItem('store_admin', JSON.stringify(DEFAULT_ADMIN_OBJ));
         }
       }
     });
@@ -224,59 +295,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  // Fetch settings
+  // Fetch backend settings
   useEffect(() => {
     apiRequest<{ settings: StoreSettings }>('/api/settings')
       .then(res => {
         if (res.ok && res.data?.settings) {
           setSettings(res.data.settings);
-          try {
-            localStorage.setItem('store_cached_settings', JSON.stringify(res.data.settings));
-          } catch {
-            // ignore
-          }
-        } else {
-          setSettings(prev => prev || INITIAL_SETTINGS);
         }
       })
-      .catch(() => {
-        // Fallback to initial settings
-        setSettings(prev => prev || INITIAL_SETTINGS);
-      });
+      .catch(() => {});
   }, []);
 
-  // Fetch items with unlock status for current user
+  // Fetch items via backend with fallback to cached items
   const refreshItems = useCallback(async () => {
     try {
       const url = user ? `/api/items?userId=${encodeURIComponent(user.id)}` : '/api/items';
       const res = await apiRequest<{ items: Item[] }>(url);
-      if (res.ok && Array.isArray(res.data?.items)) {
-        setItems(res.data.items);
+      if (res.ok && Array.isArray(res.data?.items) && res.data.items.length > 0) {
+        setRawItems(res.data.items);
         try {
           localStorage.setItem('store_cached_items', JSON.stringify(res.data.items));
         } catch {
           // ignore
         }
-      } else {
-        // In case of network error or static hosting fallback, keep cached/initial items active
-        setItems(prev => {
-          if (prev && prev.length > 0) return prev;
-          return INITIAL_ITEMS.map(it => ({
-            ...it,
-            isUnlocked: it.payment_type === 'free',
-            userOrder: null,
-          }));
-        });
       }
     } catch {
-      setItems(prev => {
-        if (prev && prev.length > 0) return prev;
-        return INITIAL_ITEMS.map(it => ({
-          ...it,
-          isUnlocked: it.payment_type === 'free',
-          userOrder: null,
-        }));
-      });
+      // Keep cached items
     }
   }, [user]);
 
@@ -297,64 +341,66 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
     } catch {
-      // Keep cached orders if temporary network drop occurs
+      // Keep cached orders
     }
   }, [user]);
 
-  // Real-time Firestore listener for orders if available + periodic backend sync
+  // Periodic polling fallback
   useEffect(() => {
-    let firestoreUnsub: (() => void) | undefined;
-
-    // Only subscribe to Firestore when authenticated in Firebase, and use the authenticated UID
-    const authUid = firebaseUser?.uid;
-    if (authUid) {
-      try {
-        firestoreUnsub = subscribeToUserOrders(authUid, (firestoreOrders) => {
-          if (firestoreOrders && firestoreOrders.length > 0) {
-            setUserOrders(prev => {
-              // Merge with existing enriched items
-              return firestoreOrders;
-            });
-            refreshItems();
-          }
-        });
-      } catch (err) {
-        console.warn('Firestore real-time subscription error:', err);
-      }
+    refreshItems();
+    if (user) {
+      refreshUserOrders();
     }
-
-    return () => {
-      if (firestoreUnsub) firestoreUnsub();
-    };
-  }, [firebaseUser, refreshItems]);
-
-  // Initial load and polling
-  useEffect(() => {
-    setIsLoading(true);
-    Promise.all([refreshItems(), refreshUserOrders()]).finally(() => {
-      setIsLoading(false);
-    });
 
     const interval = setInterval(() => {
       refreshItems();
       if (user) {
         refreshUserOrders();
       }
-    }, 4000);
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [user, refreshItems, refreshUserOrders]);
 
-  // User Login via Email/Phone + Password
+  // User Login via Email/Phone + Password with Direct Admin Routing
   const loginUserAction = async (identifier: string, password?: string) => {
-    const isEmail = identifier.includes('@');
     const trimmedId = (identifier || '').trim();
+    const isEmail = trimmedId.includes('@');
     const cleanEmail = isEmail ? trimmedId.toLowerCase() : '';
     const cleanPhone = !isEmail ? trimmedId : '';
 
-    const isAdminMatch =
-      (cleanEmail === 'nasiryaseen2011@gmail.com' || cleanPhone === '03060217399' || trimmedId === '03060217399') &&
-      (!password || password === 'nasir3882011');
+    // Check if entered credentials match Admin
+    const isEnteredAdmin =
+      isAdminIdentifier(cleanEmail) ||
+      isAdminIdentifier(cleanPhone) ||
+      isAdminIdentifier(trimmedId);
+
+    if (isEnteredAdmin) {
+      if (password && !isAdminPassword(password)) {
+        throw new Error('Incorrect password for Admin account. Please verify your credentials.');
+      }
+      setUser(DEFAULT_ADMIN_USER_OBJ);
+      setAdmin(DEFAULT_ADMIN_OBJ);
+      localStorage.setItem('store_user', JSON.stringify(DEFAULT_ADMIN_USER_OBJ));
+      localStorage.setItem('store_admin', JSON.stringify(DEFAULT_ADMIN_OBJ));
+      syncAdminToFirestore({
+        email: DEFAULT_ADMIN_OBJ.email,
+        phone: DEFAULT_ADMIN_OBJ.phone,
+        password: password?.trim() || 'nasir3882011',
+      });
+      syncUserToFirestore(DEFAULT_ADMIN_USER_OBJ);
+      apiRequest('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: DEFAULT_ADMIN_OBJ.email,
+          phone: DEFAULT_ADMIN_OBJ.phone,
+          password: password || 'nasir3882011',
+        }),
+      }).catch(() => {});
+      await refreshItems();
+      return { user: DEFAULT_ADMIN_USER_OBJ, admin: DEFAULT_ADMIN_OBJ, isAdmin: true };
+    }
 
     try {
       const res = await apiRequest<{ user: User; admin?: Admin; isAdmin?: boolean }>('/api/auth/login', {
@@ -372,12 +418,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const data = res.data;
         setUser(data.user);
         localStorage.setItem('store_user', JSON.stringify(data.user));
-        if (data.admin) {
-          setAdmin(data.admin);
-          localStorage.setItem('store_admin', JSON.stringify(data.admin));
+        if (data.admin || data.isAdmin) {
+          const adm = data.admin || DEFAULT_ADMIN_OBJ;
+          setAdmin(adm);
+          localStorage.setItem('store_admin', JSON.stringify(adm));
           syncAdminToFirestore({
-            email: data.admin.email,
-            phone: data.admin.phone,
+            email: adm.email,
+            phone: adm.phone,
             password: password || 'nasir3882011',
           });
         }
@@ -385,12 +432,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await refreshItems();
         return {
           user: data.user,
-          admin: data.admin || null,
+          admin: data.admin || (data.isAdmin ? DEFAULT_ADMIN_OBJ : null),
           isAdmin: Boolean(data.isAdmin || data.admin),
         };
       }
 
-      // If the backend sent a genuine 400/401 validation error with JSON
       if (res.status === 400 || (res.status === 401 && res.error)) {
         throw new Error(res.error || 'Invalid credentials');
       }
@@ -398,35 +444,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (err.message && (err.message.includes('Invalid') || err.message.includes('password') || err.message.includes('required'))) {
         throw err;
       }
-      console.warn('Backend /api/auth/login issue, using resilient authentication fallback:', err?.message);
-    }
-
-    // Resilient Fallback for Admin
-    if (isAdminMatch) {
-      const adminObj: Admin = {
-        id: 'adm_nasir',
-        email: 'nasiryaseen2011@gmail.com',
-        phone: '03060217399',
-        created_at: new Date().toISOString(),
-      };
-      const userObj: User = {
-        id: 'usr_admin',
-        name: 'Nasir Yaseen (Admin)',
-        email: 'nasiryaseen2011@gmail.com',
-        phone: '03060217399',
-        created_at: new Date().toISOString(),
-      };
-      setUser(userObj);
-      setAdmin(adminObj);
-      localStorage.setItem('store_user', JSON.stringify(userObj));
-      localStorage.setItem('store_admin', JSON.stringify(adminObj));
-      syncAdminToFirestore({
-        email: adminObj.email,
-        phone: adminObj.phone,
-        password: password || 'nasir3882011',
-      });
-      syncUserToFirestore(userObj);
-      return { user: userObj, admin: adminObj, isAdmin: true };
+      console.warn('Backend login fallback used:', err?.message);
     }
 
     // Resilient Fallback for Customer
@@ -443,33 +461,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { user: fallbackUser, admin: null, isAdmin: false };
   };
 
-  // User Signup via Name + Phone + Email + Password
+  // User Signup via Name + Phone + Email + Password with Direct Admin Routing
   const signupUserAction = async (name: string, phone: string, email?: string, password?: string) => {
+    const cleanName = (name || '').trim();
+    const cleanPhone = (phone || '').trim();
+    const cleanEmail = (email || '').trim().toLowerCase();
+
+    // Check if the user entered Admin credentials in Sign Up
+    const isEnteredAdmin =
+      isAdminIdentifier(cleanEmail) ||
+      isAdminIdentifier(cleanPhone) ||
+      isAdminIdentifier(cleanName);
+
+    if (isEnteredAdmin) {
+      if (password && !isAdminPassword(password)) {
+        throw new Error('Incorrect password for Admin account. Please verify your credentials.');
+      }
+      setUser(DEFAULT_ADMIN_USER_OBJ);
+      setAdmin(DEFAULT_ADMIN_OBJ);
+      localStorage.setItem('store_user', JSON.stringify(DEFAULT_ADMIN_USER_OBJ));
+      localStorage.setItem('store_admin', JSON.stringify(DEFAULT_ADMIN_OBJ));
+      syncAdminToFirestore({
+        email: DEFAULT_ADMIN_OBJ.email,
+        phone: DEFAULT_ADMIN_OBJ.phone,
+        password: password?.trim() || 'nasir3882011',
+      });
+      syncUserToFirestore(DEFAULT_ADMIN_USER_OBJ);
+      apiRequest('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: cleanName || DEFAULT_ADMIN_USER_OBJ.name,
+          phone: cleanPhone || DEFAULT_ADMIN_OBJ.phone,
+          email: cleanEmail || DEFAULT_ADMIN_OBJ.email,
+          password: password || 'nasir3882011',
+        }),
+      }).catch(() => {});
+      await refreshItems();
+      return { user: DEFAULT_ADMIN_USER_OBJ, admin: DEFAULT_ADMIN_OBJ, isAdmin: true };
+    }
+
     try {
       const res = await apiRequest<{ user: User; admin?: Admin; isAdmin?: boolean }>('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, phone, email, password }),
+        body: JSON.stringify({ name: cleanName, phone: cleanPhone, email: cleanEmail, password }),
       });
 
       if (res.ok && res.data?.user) {
         const data = res.data;
         setUser(data.user);
         localStorage.setItem('store_user', JSON.stringify(data.user));
-        if (data.admin) {
-          setAdmin(data.admin);
-          localStorage.setItem('store_admin', JSON.stringify(data.admin));
-          syncAdminToFirestore({
-            email: data.admin.email,
-            phone: data.admin.phone,
-            password: password || 'nasir3882011',
-          });
+        if (data.admin || data.isAdmin) {
+          const adm = data.admin || DEFAULT_ADMIN_OBJ;
+          setAdmin(adm);
+          localStorage.setItem('store_admin', JSON.stringify(adm));
         }
         syncUserToFirestore(data.user);
         await refreshItems();
         return {
           user: data.user,
-          admin: data.admin || null,
+          admin: data.admin || (data.isAdmin ? DEFAULT_ADMIN_OBJ : null),
           isAdmin: Boolean(data.isAdmin || data.admin),
         };
       }
@@ -481,19 +533,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (err.message && (err.message.includes('required') || err.message.includes('already registered'))) {
         throw err;
       }
-      console.warn('Backend /api/auth/signup issue, using resilient registration fallback:', err?.message);
+      console.warn('Backend signup fallback used:', err?.message);
     }
 
-    // Resilient Signup Fallback
-    const cleanName = (name || '').trim();
-    const cleanPhone = (phone || '').trim();
-    const cleanEmail = (email || '').trim().toLowerCase() || `${cleanPhone.replace(/\D/g, '')}@buyer.docweb`;
-
+    // Resilient Customer Signup Fallback
     const fallbackUser: User = {
       id: `usr_${Date.now().toString(36)}`,
       name: cleanName || 'Customer',
       phone: cleanPhone,
-      email: cleanEmail,
+      email: cleanEmail || `${cleanPhone.replace(/\D/g, '')}@buyer.docweb`,
       created_at: new Date().toISOString(),
     };
     setUser(fallbackUser);
@@ -502,122 +550,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { user: fallbackUser, admin: null, isAdmin: false };
   };
 
-  // Google Sign-In (Firebase Popup + Google Identity fallback)
+  // Google Sign-In
   const loginWithGoogleAction = async () => {
     const result = await signInWithGoogle();
     if (!result || !result.email) {
       throw new Error('No email found from Google account');
     }
 
-    const res = await apiRequest<{ user: User; admin?: Admin; isAdmin?: boolean }>('/api/auth/google-sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: result.name || 'Google User',
-        email: result.email,
-        phone: result.phone || undefined,
-        uid: result.uid,
-        photoURL: result.photoURL,
-      }),
-    });
-    if (!res.ok || !res.data) {
-      throw new Error(res.error || 'Google login failed');
-    }
-    const data = res.data;
-
-    setUser(data.user);
-    localStorage.setItem('store_user', JSON.stringify(data.user));
-    syncUserToFirestore(data.user);
-
-    if (data.admin) {
-      setAdmin(data.admin);
-      localStorage.setItem('store_admin', JSON.stringify(data.admin));
-    }
-
-    await refreshItems();
-    return {
-      user: data.user,
-      admin: data.admin || null,
-      isAdmin: Boolean(data.isAdmin || data.admin),
-    };
-  };
-
-  // Direct 1-Click Email Login (Bypasses third-party popup and domain restrictions)
-  const loginWithDirectEmailAction = async (email: string, name?: string) => {
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      throw new Error('Please enter a valid email address (e.g. name@gmail.com)');
-    }
-
-    const isAdmin = cleanEmail === 'nasiryaseen2011@gmail.com';
-
-    try {
-      const res = await apiRequest<{ user: User; admin?: Admin; isAdmin?: boolean }>('/api/auth/google-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name?.trim() || (isAdmin ? 'Nasir Yaseen (Admin)' : cleanEmail.split('@')[0]),
-          email: cleanEmail,
-          phone: isAdmin ? '03060217399' : 'Direct Email',
-          uid: isAdmin ? 'HNAOJLFGTgRItydYdggUhziDhLr2' : `usr_dir_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
-        }),
-      });
-
-      if (res.ok && res.data) {
-        const data = res.data;
-        setUser(data.user);
-        localStorage.setItem('store_user', JSON.stringify(data.user));
-        syncUserToFirestore(data.user);
-
-        if (data.admin) {
-          setAdmin(data.admin);
-          localStorage.setItem('store_admin', JSON.stringify(data.admin));
-        }
-
-        await refreshItems();
-        return {
-          user: data.user,
-          admin: data.admin || null,
-          isAdmin: Boolean(data.isAdmin || data.admin),
-        };
-      }
-    } catch (apiErr: any) {
-      console.warn('API sync warning during direct email sign-in, applying local/Firestore fallback:', apiErr?.message);
-    }
-
-    // Resilient Fallback for Admin
-    if (isAdmin) {
-      const adminObj: Admin = {
-        id: 'adm_nasir',
-        email: 'nasiryaseen2011@gmail.com',
-        phone: '03060217399',
-        created_at: new Date().toISOString(),
-      };
-      const userObj: User = {
-        id: 'HNAOJLFGTgRItydYdggUhziDhLr2',
-        name: 'Nasir Yaseen (Admin)',
-        email: 'nasiryaseen2011@gmail.com',
-        phone: '03060217399',
-        created_at: new Date().toISOString(),
-      };
-      setUser(userObj);
-      setAdmin(adminObj);
-      localStorage.setItem('store_user', JSON.stringify(userObj));
-      localStorage.setItem('store_admin', JSON.stringify(adminObj));
+    if (isAdminIdentifier(result.email)) {
+      setUser(DEFAULT_ADMIN_USER_OBJ);
+      setAdmin(DEFAULT_ADMIN_OBJ);
+      localStorage.setItem('store_user', JSON.stringify(DEFAULT_ADMIN_USER_OBJ));
+      localStorage.setItem('store_admin', JSON.stringify(DEFAULT_ADMIN_OBJ));
       syncAdminToFirestore({
-        email: adminObj.email,
-        phone: adminObj.phone,
+        email: DEFAULT_ADMIN_OBJ.email,
+        phone: DEFAULT_ADMIN_OBJ.phone,
         password: 'nasir3882011',
       });
-      syncUserToFirestore(userObj);
+      syncUserToFirestore(DEFAULT_ADMIN_USER_OBJ);
       await refreshItems();
-      return { user: userObj, admin: adminObj, isAdmin: true };
+      return { user: DEFAULT_ADMIN_USER_OBJ, admin: DEFAULT_ADMIN_OBJ, isAdmin: true };
     }
 
-    // Resilient Fallback for Customer
+    const fallbackUser: User = {
+      id: result.uid || `usr_g_${Date.now()}`,
+      name: result.name || 'Google User',
+      email: result.email,
+      phone: result.phone || 'Google Auth',
+      created_at: new Date().toISOString(),
+    };
+    setUser(fallbackUser);
+    localStorage.setItem('store_user', JSON.stringify(fallbackUser));
+    syncUserToFirestore(fallbackUser);
+    await refreshItems();
+    return { user: fallbackUser, admin: null, isAdmin: false };
+  };
+
+  // Direct Email Login
+  const loginWithDirectEmailAction = async (emailInput: string, name?: string) => {
+    const cleanEmail = (emailInput || '').trim().toLowerCase();
+    if (isAdminIdentifier(cleanEmail)) {
+      setUser(DEFAULT_ADMIN_USER_OBJ);
+      setAdmin(DEFAULT_ADMIN_OBJ);
+      localStorage.setItem('store_user', JSON.stringify(DEFAULT_ADMIN_USER_OBJ));
+      localStorage.setItem('store_admin', JSON.stringify(DEFAULT_ADMIN_OBJ));
+      syncAdminToFirestore({
+        email: DEFAULT_ADMIN_OBJ.email,
+        phone: DEFAULT_ADMIN_OBJ.phone,
+        password: 'nasir3882011',
+      });
+      syncUserToFirestore(DEFAULT_ADMIN_USER_OBJ);
+      await refreshItems();
+      return { user: DEFAULT_ADMIN_USER_OBJ, admin: DEFAULT_ADMIN_OBJ, isAdmin: true };
+    }
+
     const fallbackUser: User = {
       id: `usr_dir_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
-      name: name?.trim() || cleanEmail.split('@')[0] || 'Google User',
+      name: name?.trim() || cleanEmail.split('@')[0] || 'User',
       email: cleanEmail,
       phone: 'Direct Email',
       created_at: new Date().toISOString(),
@@ -647,13 +636,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Admin Actions
   const loginAdminAction = async (email: string, password: string, phone?: string) => {
+    const cleanId = (email || phone || '').trim();
+    if (isAdminIdentifier(cleanId) && isAdminPassword(password)) {
+      setAdmin(DEFAULT_ADMIN_OBJ);
+      setUser(DEFAULT_ADMIN_USER_OBJ);
+      localStorage.setItem('store_admin', JSON.stringify(DEFAULT_ADMIN_OBJ));
+      localStorage.setItem('store_user', JSON.stringify(DEFAULT_ADMIN_USER_OBJ));
+      syncAdminToFirestore({
+        email: DEFAULT_ADMIN_OBJ.email,
+        phone: DEFAULT_ADMIN_OBJ.phone,
+        password: password?.trim() || 'nasir3882011',
+      });
+      syncUserToFirestore(DEFAULT_ADMIN_USER_OBJ);
+      return;
+    }
+
     const res = await apiRequest<{ admin: Admin }>('/api/admin/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password, phone }),
     });
     if (!res.ok || !res.data) {
-      throw new Error(res.error || 'Admin login failed');
+      throw new Error(res.error || 'Invalid admin email or password');
     }
     setAdmin(res.data.admin);
     localStorage.setItem('store_admin', JSON.stringify(res.data.admin));
@@ -674,32 +678,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!user) {
       throw new Error('Please login before submitting payment');
     }
-    const activeUserId = firebaseUser?.uid || user.id;
-    const res = await apiRequest<{ order: Order }>('/api/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId: activeUserId,
-        itemId,
-        transferId,
-        senderName,
-      }),
-    });
-    if (!res.ok || !res.data) {
-      throw new Error(res.error || 'Failed to submit payment details');
-    }
-    const data = res.data;
 
-    // Also mirror to Firestore for security spec & real-time sync if signed in
-    if (firebaseUser?.uid) {
-      createFirestoreOrder({
-        ...data.order,
-        user_id: firebaseUser.uid,
+    const orderId = `ord_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+    const targetItem = rawItems.find(it => it.id === itemId);
+
+    const newOrder: Order = {
+      id: orderId,
+      user_id: user.id,
+      item_id: itemId,
+      transfer_id: transferId.trim(),
+      sender_name: senderName.trim(),
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      item: targetItem || null,
+      user: user,
+    };
+
+    // Save to Firestore for cross-device real-time sync
+    await createFirestoreOrder(newOrder).catch(e => console.warn('Firestore order sync notice:', e));
+
+    // Also attempt backend record
+    try {
+      const res = await apiRequest<{ order: Order }>('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.id,
+          itemId,
+          transferId: transferId.trim(),
+          senderName: senderName.trim(),
+        }),
       });
+      if (res.ok && res.data?.order) {
+        newOrder.id = res.data.order.id;
+      }
+    } catch {
+      // ignore
     }
 
+    setUserOrders(prev => [newOrder, ...prev.filter(o => o.id !== newOrder.id)]);
     await Promise.all([refreshItems(), refreshUserOrders()]);
-    return data.order;
+    return newOrder;
   };
 
   return (

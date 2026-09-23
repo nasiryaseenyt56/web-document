@@ -1,6 +1,6 @@
 // Safe API client with automatic backend URL resolution for Netlify & static hosts
 
-export const CLOUD_RUN_BACKEND = 'https://ais-pre-ktgpxsdu3xo5gojc4oglsy-155376573311.asia-east1.run.app';
+export const CLOUD_RUN_BACKEND = '';
 
 /**
  * Resolve the API base URL based on host environment
@@ -14,7 +14,7 @@ export function getApiBaseUrl(): string {
 
   const hostname = window.location.hostname;
 
-  // 2. If running on Cloud Run (*.run.app) or local development, always use relative path
+  // 2. If running on local development or Cloud Run, use relative path
   if (
     hostname === 'localhost' ||
     hostname.includes('127.0.0.1') ||
@@ -24,8 +24,7 @@ export function getApiBaseUrl(): string {
     return '';
   }
 
-  // 3. If running on an external static host (Netlify, Vercel, GitHub Pages, custom domain),
-  // default to Cloud Run backend to avoid 404 HTML redirects on static hosts
+  // 3. If running on external host with custom backend configured
   if (CLOUD_RUN_BACKEND) {
     return CLOUD_RUN_BACKEND;
   }

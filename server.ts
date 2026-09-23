@@ -51,8 +51,8 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
 });
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // CORS headers for resilient API communication across reverse proxies & preview domains
 app.use((req, res, next) => {
@@ -295,6 +295,7 @@ app.get('/api/admin/items', (_req, res) => {
 app.post('/api/admin/items', (req, res) => {
   try {
     const {
+      id,
       type,
       title,
       description,
@@ -319,6 +320,7 @@ app.post('/api/admin/items', (req, res) => {
     }
 
     const newItem = createItem({
+      id: id || undefined,
       type,
       title,
       description,
@@ -407,6 +409,16 @@ app.get('/api/admin/orders', (_req, res) => {
     return res.json({ orders });
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Failed to fetch orders' });
+  }
+});
+
+// Admin: Get All Registered Users / Customers
+app.get('/api/admin/users', (_req, res) => {
+  try {
+    const db = readDatabase();
+    return res.json({ users: db.users || [] });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Failed to fetch users' });
   }
 });
 

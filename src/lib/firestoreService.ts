@@ -10,9 +10,8 @@ import {
   where,
   onSnapshot,
   Unsubscribe,
-  serverTimestamp,
 } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType } from './firebase.ts';
+import { db, handleFirestoreError, OperationType } from './firebase.ts';
 import type { Item, Order, User, StoreSettings } from '../types.ts';
 
 // Collection references
@@ -25,20 +24,116 @@ const SETTINGS_COL = 'settings';
  * Save or update user profile in Firestore
  */
 export async function syncUserToFirestore(userData: User): Promise<void> {
+  if (!userData?.id) return;
   const path = `${USERS_COL}/${userData.id}`;
   try {
     const userRef = doc(db, USERS_COL, userData.id);
     await setDoc(userRef, {
       id: userData.id,
-      name: userData.name,
-      phone: userData.phone,
-      email: userData.email,
+      name: userData.name || 'Store User',
+      phone: userData.phone || '',
+      email: userData.email || '',
       role: 'customer',
       created_at: userData.created_at || new Date().toISOString(),
     }, { merge: true });
   } catch (err) {
-    // If not authenticated yet in Firebase, log or handle gracefully
-    console.warn('Firestore user sync warning:', err);
+    console.warn('Firestore user sync notice:', err);
+  }
+}
+
+/**
+ * Fetch all registered users from Firestore
+ */
+export async function fetchUsersFromFirestore(): Promise<User[]> {
+  try {
+    const snap = await getDocs(collection(db, USERS_COL));
+    const users: User[] = [];
+    snap.forEach(docSnap => {
+      const data = docSnap.data();
+      users.push({
+        id: docSnap.id,
+        name: data.name || 'User',
+        phone: data.phone || '',
+        email: data.email || '',
+        created_at: data.created_at || new Date().toISOString(),
+      });
+    });
+    return users.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  } catch (err) {
+    console.warn('Firestore fetch users notice:', err);
+    return [];
+  }
+}
+
+/**
+ * Real-time listener for all registered users (for Admin Portal)
+ */
+export function subscribeToUsers(onUpdate: (users: User[]) => void): Unsubscribe {
+  try {
+    const q = collection(db, USERS_COL);
+    return onSnapshot(
+      q,
+      snapshot => {
+        const users: User[] = [];
+        snapshot.forEach(docSnap => {
+          const data = docSnap.data();
+          users.push({
+            id: docSnap.id,
+            name: data.name || 'User',
+            phone: data.phone || '',
+            email: data.email || '',
+            created_at: data.created_at || new Date().toISOString(),
+          });
+        });
+        users.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        onUpdate(users);
+      },
+      error => {
+        console.warn('Users subscription notice:', error);
+      }
+    );
+  } catch {
+    return () => {};
+  }
+}
+
+/**
+ * Real-time listener for marketplace items (documents and websites)
+ */
+export function subscribeToItems(onUpdate: (items: Item[]) => void): Unsubscribe {
+  try {
+    const q = collection(db, ITEMS_COL);
+    return onSnapshot(
+      q,
+      snapshot => {
+        const items: Item[] = [];
+        snapshot.forEach(docSnap => {
+          const data = docSnap.data();
+          items.push({
+            id: docSnap.id,
+            type: data.type || 'document',
+            title: data.title || '',
+            description: data.description || '',
+            file_url: data.file_url || null,
+            file_name: data.file_name || null,
+            file_size: data.file_size || null,
+            website_url: data.website_url || null,
+            price: Number(data.price) || 0,
+            payment_type: data.payment_type || 'pay',
+            account_numbers: data.account_numbers || '',
+            status: data.status || 'published',
+            created_at: data.created_at || new Date().toISOString(),
+          });
+        });
+        items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        onUpdate(items);
+      },
+      error => {
+        console.warn('Items subscription notice:', error);
+      }
+    );
+  } catch {
+    return () => {};
   }
 }
 
@@ -49,37 +144,78 @@ export function subscribeToUserOrders(
   userId: string,
   onUpdate: (orders: Order[]) => void
 ): Unsubscribe {
-  if (!auth.currentUser || (auth.currentUser.uid !== userId && auth.currentUser.email !== 'nasiryaseen2011@gmail.com')) {
+  if (!userId) return () => {};
+
+  try {
+    const q = query(collection(db, ORDERS_COL), where('user_id', '==', userId));
+    return onSnapshot(
+      q,
+      snapshot => {
+        const orders: Order[] = [];
+        snapshot.forEach(docSnap => {
+          const data = docSnap.data();
+          orders.push({
+            id: docSnap.id,
+            user_id: data.user_id,
+            item_id: data.item_id,
+            transfer_id: data.transfer_id,
+            sender_name: data.sender_name,
+            status: data.status,
+            created_at: data.created_at || new Date().toISOString(),
+            verified_at: data.verified_at,
+            item: data.item,
+            user: data.user,
+          });
+        });
+        orders.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        onUpdate(orders);
+      },
+      error => {
+        console.warn('Orders subscription notice:', error);
+      }
+    );
+  } catch {
     return () => {};
   }
+}
 
-  const q = query(collection(db, ORDERS_COL), where('user_id', '==', userId));
-
-  return onSnapshot(
-    q,
-    snapshot => {
-      const orders: Order[] = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        orders.push({
-          id: docSnap.id,
-          user_id: data.user_id,
-          item_id: data.item_id,
-          transfer_id: data.transfer_id,
-          sender_name: data.sender_name,
-          status: data.status,
-          created_at: data.created_at || new Date().toISOString(),
-          verified_at: data.verified_at,
-          item: data.item,
-          user: data.user,
+/**
+ * Real-time listener for all orders across the entire store (for Admin Portal)
+ */
+export function subscribeToAllOrders(
+  onUpdate: (orders: Order[]) => void
+): Unsubscribe {
+  try {
+    const q = collection(db, ORDERS_COL);
+    return onSnapshot(
+      q,
+      snapshot => {
+        const orders: Order[] = [];
+        snapshot.forEach(docSnap => {
+          const data = docSnap.data();
+          orders.push({
+            id: docSnap.id,
+            user_id: data.user_id,
+            item_id: data.item_id,
+            transfer_id: data.transfer_id,
+            sender_name: data.sender_name,
+            status: data.status,
+            created_at: data.created_at || new Date().toISOString(),
+            verified_at: data.verified_at,
+            item: data.item,
+            user: data.user,
+          });
         });
-      });
-      onUpdate(orders);
-    },
-    error => {
-      handleFirestoreError(error, OperationType.LIST, ORDERS_COL);
-    }
-  );
+        orders.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        onUpdate(orders);
+      },
+      error => {
+        console.warn('All orders subscription notice:', error);
+      }
+    );
+  } catch {
+    return () => {};
+  }
 }
 
 /**
@@ -88,38 +224,38 @@ export function subscribeToUserOrders(
 export function subscribeToStoreSettings(
   onUpdate: (settings: StoreSettings) => void
 ): Unsubscribe {
-  const settingsDocRef = doc(db, SETTINGS_COL, 'global');
-
-  return onSnapshot(
-    settingsDocRef,
-    docSnap => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        onUpdate({
-          admin_whatsapp: data.admin_whatsapp || '919876543210',
-          default_account_numbers: data.default_account_numbers || '',
-        });
+  try {
+    const settingsDocRef = doc(db, SETTINGS_COL, 'global');
+    return onSnapshot(
+      settingsDocRef,
+      docSnap => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          onUpdate({
+            admin_whatsapp: data.admin_whatsapp || '923060217399',
+            default_account_numbers: data.default_account_numbers || '',
+          });
+        }
+      },
+      error => {
+        console.warn('Settings subscription notice:', error);
       }
-    },
-    error => {
-      console.warn('Settings subscription fallback:', error);
-    }
-  );
+    );
+  } catch {
+    return () => {};
+  }
 }
 
 /**
  * Save order to Firestore
  */
 export async function createFirestoreOrder(order: Order): Promise<void> {
-  if (!auth.currentUser) {
-    return;
-  }
   const path = `${ORDERS_COL}/${order.id}`;
   try {
     const orderRef = doc(db, ORDERS_COL, order.id);
     await setDoc(orderRef, {
       id: order.id,
-      user_id: auth.currentUser.uid,
+      user_id: order.user_id,
       item_id: order.item_id,
       transfer_id: order.transfer_id,
       sender_name: order.sender_name,
@@ -127,9 +263,9 @@ export async function createFirestoreOrder(order: Order): Promise<void> {
       created_at: order.created_at || new Date().toISOString(),
       item: order.item || null,
       user: order.user || null,
-    });
+    }, { merge: true });
   } catch (err) {
-    console.warn('Firestore order sync:', err);
+    console.warn('Firestore order sync notice:', err);
   }
 }
 
@@ -143,12 +279,12 @@ export async function updateFirestoreOrderStatus(
   const path = `${ORDERS_COL}/${orderId}`;
   try {
     const orderRef = doc(db, ORDERS_COL, orderId);
-    await updateDoc(orderRef, {
+    await setDoc(orderRef, {
       status,
       verified_at: status === 'verified' ? new Date().toISOString() : null,
-    });
+    }, { merge: true });
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    console.warn('Firestore order status notice:', err);
   }
 }
 
@@ -156,16 +292,20 @@ export async function updateFirestoreOrderStatus(
  * Sync (create or update) item in Firestore
  */
 export async function syncItemToFirestore(item: Item): Promise<void> {
-  if (!auth.currentUser) return;
   const path = `${ITEMS_COL}/${item.id}`;
   try {
     const itemRef = doc(db, ITEMS_COL, item.id);
+    let safeFileUrl = item.file_url || null;
+    // Firestore has a strict 1MB document size limit. Prevent huge base64 strings from failing write.
+    if (safeFileUrl && safeFileUrl.startsWith('data:') && safeFileUrl.length > 700000) {
+      safeFileUrl = null;
+    }
     await setDoc(itemRef, {
       id: item.id,
       type: item.type,
       title: item.title,
       description: item.description,
-      file_url: item.file_url || null,
+      file_url: safeFileUrl,
       file_name: item.file_name || null,
       file_size: item.file_size || null,
       website_url: item.website_url || null,
@@ -176,7 +316,7 @@ export async function syncItemToFirestore(item: Item): Promise<void> {
       created_at: item.created_at || new Date().toISOString(),
     }, { merge: true });
   } catch (err) {
-    console.warn('Firestore item sync warning:', err);
+    console.warn('Firestore item sync notice:', err);
   }
 }
 
@@ -184,13 +324,12 @@ export async function syncItemToFirestore(item: Item): Promise<void> {
  * Delete item from Firestore
  */
 export async function deleteItemFromFirestore(itemId: string): Promise<void> {
-  if (!auth.currentUser) return;
   const path = `${ITEMS_COL}/${itemId}`;
   try {
     const itemRef = doc(db, ITEMS_COL, itemId);
     await deleteDoc(itemRef);
   } catch (err) {
-    console.warn('Firestore item delete warning:', err);
+    console.warn('Firestore item delete notice:', err);
   }
 }
 
@@ -222,7 +361,8 @@ export async function syncAdminToFirestore(adminData: {
       updated_at: new Date().toISOString(),
     }, { merge: true });
   } catch (err) {
-    console.warn('Firestore admin credentials sync warning:', err);
+    console.warn('Firestore admin credentials sync notice:', err);
   }
 }
+
 

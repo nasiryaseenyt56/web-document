@@ -12,9 +12,10 @@ import {
   Eye,
   EyeOff,
   ShieldAlert,
+  ShieldCheck,
   CheckCircle2,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext.tsx';
+import { useAuth, isAdminIdentifier } from '../context/AuthContext.tsx';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -45,14 +46,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const { loginUser, signupUser, user, admin } = useAuth();
 
-  // If user is already logged in, do not stay open
+  // If admin is authenticated, route immediately to admin portal
   useEffect(() => {
-    if (user || admin) {
+    if (admin) {
+      if (isOpen) {
+        onClose();
+      }
+      if (typeof window !== 'undefined' && window.location.pathname !== '/admin') {
+        navigate('/admin');
+      }
+    } else if (user) {
       if (isOpen) {
         onClose();
       }
     }
-  }, [user, admin, isOpen, onClose]);
+  }, [user, admin, isOpen, onClose, navigate]);
 
   // Allow closing on ESC key
   useEffect(() => {
@@ -97,15 +105,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           trimmedPass || undefined
         );
 
+        if (res?.admin || res?.isAdmin) {
+          onClose();
+          navigate('/admin');
+          return;
+        }
+
         setSuccessMsg('Account created successfully!');
         setTimeout(() => {
           onClose();
-          if (res?.admin || res?.isAdmin) {
-            navigate('/admin');
-            return;
-          }
           if (onSuccess) onSuccess();
-        }, 500);
+        }, 300);
       } else {
         const trimmedId = identifier.trim();
         const trimmedPass = password.trim();
@@ -116,15 +126,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         const res = await loginUser(trimmedId, trimmedPass || undefined);
 
+        if (res?.admin || res?.isAdmin) {
+          onClose();
+          navigate('/admin');
+          return;
+        }
+
         setSuccessMsg('Signed in successfully!');
         setTimeout(() => {
           onClose();
-          if (res?.admin || res?.isAdmin) {
-            navigate('/admin');
-            return;
-          }
           if (onSuccess) onSuccess();
-        }, 500);
+        }, 300);
       }
     } catch (err: any) {
       setError(err.message || 'Authentication error. Please verify your credentials.');
@@ -267,6 +279,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               </div>
 
+              {isAdminIdentifier(identifier) && (
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+                  <div>
+                    <span className="font-bold">Authorized Admin Account:</span>
+                    <span className="ml-1 text-amber-800">You will be logged in and routed directly to the Admin Portal.</span>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Password <span className="text-slate-400 font-normal">(Optional for regular users, required for Admin)</span>
@@ -374,6 +396,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {(isAdminIdentifier(email) || isAdminIdentifier(phone) || isAdminIdentifier(name)) && (
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+                  <div>
+                    <span className="font-bold">Authorized Admin Account:</span>
+                    <span className="ml-1 text-amber-800">You will be logged in and routed directly to the Admin Portal.</span>
+                  </div>
+                </div>
+              )}
             </>
           )}
 

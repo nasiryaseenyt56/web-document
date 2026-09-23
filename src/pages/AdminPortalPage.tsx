@@ -22,21 +22,36 @@ import {
   MessageCircle,
   X,
   Eye,
+  Users,
+  Search,
+  UserCheck,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext.tsx';
-import type { Item, Order, StoreSettings } from '../types.ts';
-import { syncItemToFirestore, deleteItemFromFirestore } from '../lib/firestoreService.ts';
+import { useAuth, isAdminIdentifier } from '../context/AuthContext.tsx';
+import type { Item, Order, StoreSettings, User } from '../types.ts';
+import {
+  syncItemToFirestore,
+  syncUserToFirestore,
+  deleteItemFromFirestore,
+  updateFirestoreOrderStatus,
+  subscribeToAllOrders,
+  subscribeToItems,
+  subscribeToUsers,
+  subscribeToStoreSettings,
+  fetchUsersFromFirestore,
+} from '../lib/firestoreService.ts';
 import { apiRequest, getApiBaseUrl } from '../lib/api.ts';
 
 export const AdminPortalPage: React.FC = () => {
   const { admin, logoutAdmin, refreshItems } = useAuth();
   const navigate = useNavigate();
 
-  // Tab state: 'orders' | 'items' | 'add_document' | 'add_website' | 'settings'
-  const [activeTab, setActiveTab] = useState<'orders' | 'items' | 'add_document' | 'add_website' | 'settings'>('orders');
+  // Tab state: 'orders' | 'items' | 'users' | 'add_document' | 'add_website' | 'settings'
+  const [activeTab, setActiveTab] = useState<'orders' | 'items' | 'users' | 'add_document' | 'add_website' | 'settings'>('orders');
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
   const [settings, setSettings] = useState<StoreSettings>({
     admin_whatsapp: '923060217399',
     default_account_numbers: 'JazzCash / EasyPaisa: 03060217399\nAccount Title: Nasir Yaseen\nBank: Meezan Bank Ltd\nAccount No: 01020102938101',
@@ -80,14 +95,15 @@ export const AdminPortalPage: React.FC = () => {
     }
   }, [admin, navigate]);
 
-  // Load admin orders, items, and settings
+  // Load admin orders, items, users, and settings
   const loadAdminData = async (showFullSpinner = false) => {
     if (showFullSpinner) setIsLoading(true);
     try {
-      const [ordersRes, itemsRes, settingsRes] = await Promise.all([
+      const [ordersRes, itemsRes, settingsRes, usersRes] = await Promise.all([
         apiRequest<{ orders: Order[] }>('/api/admin/orders'),
         apiRequest<{ items: Item[] }>('/api/admin/items'),
         apiRequest<{ settings: StoreSettings }>('/api/admin/settings'),
+        apiRequest<{ users: User[] }>('/api/admin/users'),
       ]);
 
       if (ordersRes.ok && ordersRes.data) {
@@ -95,6 +111,20 @@ export const AdminPortalPage: React.FC = () => {
       }
       if (itemsRes.ok && itemsRes.data) {
         setItems(itemsRes.data.items || []);
+      }
+      // Seamlessly merge backend users and Firestore users
+      const firestoreUsers = await fetchUsersFromFirestore();
+      const backendUsers = (usersRes.ok && Array.isArray(usersRes.data?.users)) ? usersRes.data.users : [];
+      const userMap = new Map<string, User>();
+      backendUsers.forEach(u => userMap.set(u.id, u));
+      firestoreUsers.forEach(u => userMap.set(u.id, u));
+      const mergedUsers = Array.from(userMap.values()).sort(
+        (a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime()
+      );
+      setUsers(mergedUsers);
+      // Auto-replicate any backend users to Firestore for instant real-time sync
+      for (const u of backendUsers) {
+        syncUserToFirestore(u).catch(() => {});
       }
       if (settingsRes.ok && settingsRes.data?.settings) {
         setSettings(settingsRes.data.settings);
@@ -108,10 +138,49 @@ export const AdminPortalPage: React.FC = () => {
     }
   };
 
+  // Real-Time Firestore listeners for orders, items, users, and settings
   useEffect(() => {
-    if (admin) {
-      loadAdminData(true);
-    }
+    if (!admin) return;
+
+    loadAdminData(true);
+
+    const unsubOrders = subscribeToAllOrders((firestoreOrders) => {
+      if (Array.isArray(firestoreOrders)) {
+        setOrders(firestoreOrders);
+      }
+    });
+
+    const unsubItems = subscribeToItems((firestoreItems) => {
+      if (Array.isArray(firestoreItems) && firestoreItems.length > 0) {
+        setItems(firestoreItems);
+      }
+    });
+
+    const unsubUsers = subscribeToUsers((firestoreUsers) => {
+      if (Array.isArray(firestoreUsers)) {
+        setUsers(prev => {
+          const map = new Map<string, User>();
+          prev.forEach(u => map.set(u.id, u));
+          firestoreUsers.forEach(u => map.set(u.id, u));
+          return Array.from(map.values()).sort(
+            (a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime()
+          );
+        });
+      }
+    });
+
+    const unsubSettings = subscribeToStoreSettings((newSettings) => {
+      if (newSettings?.admin_whatsapp) {
+        setSettings(newSettings);
+      }
+    });
+
+    return () => {
+      unsubOrders();
+      unsubItems();
+      unsubUsers();
+      unsubSettings();
+    };
   }, [admin]);
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
@@ -119,20 +188,33 @@ export const AdminPortalPage: React.FC = () => {
     setTimeout(() => setActionMessage(null), 4000);
   };
 
-  // Toggle order status (verified <-> pending)
+  // Toggle order status (verified <-> pending) with Real-Time sync
   const handleToggleOrderStatus = async (orderId: string, currentStatus: 'pending' | 'verified') => {
     const nextStatus = currentStatus === 'verified' ? 'pending' : 'verified';
     try {
+      // 1. Immediately update in Firestore in real-time
+      await updateFirestoreOrderStatus(orderId, nextStatus).catch(e => console.warn('Firestore status sync:', e));
+
+      // 2. Also send to backend
       const res = await apiRequest(`/api/admin/orders/${orderId}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus }),
       });
       if (!res.ok) {
-        throw new Error(res.error || 'Failed to update status');
+        console.warn('Backend order update notice:', res.error);
       }
+
+      // 3. Immediately reflect in local state
+      setOrders(prev =>
+        prev.map(o =>
+          o.id === orderId
+            ? { ...o, status: nextStatus, verified_at: nextStatus === 'verified' ? new Date().toISOString() : undefined }
+            : o
+        )
+      );
+
       showNotification(`Order status updated to "${nextStatus.toUpperCase()}"`);
-      await loadAdminData(false);
       await refreshItems();
     } catch (err: any) {
       showNotification(err.message, 'error');
@@ -142,18 +224,21 @@ export const AdminPortalPage: React.FC = () => {
   // Confirm delete item
   const handleConfirmDelete = async () => {
     if (!itemToDelete) return;
+    const targetId = itemToDelete.id;
+    const targetTitle = itemToDelete.title;
     setIsDeletingItem(true);
     try {
-      const res = await apiRequest(`/api/admin/items/${itemToDelete.id}`, { method: 'DELETE' });
-      if (!res.ok) {
-        throw new Error(res.error || 'Failed to delete item');
-      }
-      // Also delete from Firestore if synced
-      await deleteItemFromFirestore(itemToDelete.id).catch(e => console.warn(e));
+      // 1. Delete from Firestore in real-time
+      await deleteItemFromFirestore(targetId).catch(e => console.warn(e));
 
-      showNotification(`"${itemToDelete.title}" deleted successfully`);
+      // 2. Also delete from backend
+      await apiRequest(`/api/admin/items/${targetId}`, { method: 'DELETE' }).catch(() => {});
+
+      // 3. Immediately reflect in local state
+      setItems(prev => prev.filter(it => it.id !== targetId));
+
+      showNotification(`"${targetTitle}" deleted successfully`);
       setItemToDelete(null);
-      await loadAdminData(false);
       await refreshItems();
     } catch (err: any) {
       showNotification(err.message, 'error');
@@ -243,7 +328,9 @@ export const AdminPortalPage: React.FC = () => {
         fileSize = uploaded.fileSize;
       }
 
+      const newItemId = `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const itemPayload = {
+        id: newItemId,
         type: 'document' as const,
         title: docTitle.trim(),
         description: docDescription.trim(),
@@ -256,20 +343,27 @@ export const AdminPortalPage: React.FC = () => {
         status: 'published' as const,
       };
 
-      const res = await apiRequest<{ item: Item }>('/api/admin/items', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(itemPayload),
-      });
-
-      const createdItem: Item = res.data?.item || {
-        id: `item_${Date.now()}`,
+      const createdItem: Item = {
         ...itemPayload,
         created_at: new Date().toISOString(),
       };
 
-      // Always sync item to Firestore so it persists across all devices and Netlify
+      // 1. Immediately update local state so admin sees it instantaneously
+      setItems(prev => [createdItem, ...prev.filter(it => it.id !== createdItem.id)]);
+
+      // 2. Immediately sync item to Firestore so it persists across all devices and Netlify
       await syncItemToFirestore(createdItem).catch((e) => console.warn('Firestore sync notice:', e));
+
+      // 3. Also send to backend
+      try {
+        await apiRequest<{ item: Item }>('/api/admin/items', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(itemPayload),
+        });
+      } catch (e) {
+        console.warn('Backend item push notice:', e);
+      }
 
       showNotification('Document published successfully!');
       // Reset form
@@ -279,7 +373,6 @@ export const AdminPortalPage: React.FC = () => {
       setDocPrice(1500);
       setDocButtonType('pay');
       setActiveTab('items');
-      await loadAdminData();
       await refreshItems();
     } catch (err: any) {
       showNotification(err.message || 'Failed to publish document', 'error');
@@ -298,7 +391,9 @@ export const AdminPortalPage: React.FC = () => {
 
     setIsSubmittingWeb(true);
     try {
+      const newItemId = `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const itemPayload = {
+        id: newItemId,
         type: 'website' as const,
         title: webTitle.trim(),
         description: webDescription.trim(),
@@ -309,19 +404,27 @@ export const AdminPortalPage: React.FC = () => {
         status: 'published' as const,
       };
 
-      const res = await apiRequest<{ item: Item }>('/api/admin/items', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(itemPayload),
-      });
-
-      const createdItem: Item = res.data?.item || {
-        id: `item_${Date.now()}`,
+      const createdItem: Item = {
         ...itemPayload,
         created_at: new Date().toISOString(),
       };
 
+      // 1. Immediately update local state
+      setItems(prev => [createdItem, ...prev.filter(it => it.id !== createdItem.id)]);
+
+      // 2. Immediately sync to Firestore
       await syncItemToFirestore(createdItem).catch((e) => console.warn('Firestore sync notice:', e));
+
+      // 3. Also send to backend
+      try {
+        await apiRequest<{ item: Item }>('/api/admin/items', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(itemPayload),
+        });
+      } catch (e) {
+        console.warn('Backend website push notice:', e);
+      }
 
       showNotification('Website portal published successfully!');
       // Reset form
@@ -331,7 +434,6 @@ export const AdminPortalPage: React.FC = () => {
       setWebPrice(3000);
       setWebButtonType('pay');
       setActiveTab('items');
-      await loadAdminData();
       await refreshItems();
     } catch (err: any) {
       showNotification(err.message || 'Failed to publish website', 'error');
@@ -374,21 +476,27 @@ export const AdminPortalPage: React.FC = () => {
         account_numbers: editingItem.payment_type === 'free' ? '' : (editingItem.account_numbers || ''),
       };
 
-      const res = await apiRequest<{ item: Item }>(`/api/admin/items/${editingItem.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const updated: Item = { ...editingItem, ...payload };
 
-      const updated = res.data?.item || { ...editingItem, ...payload };
-
-      // Also mirror to Firestore if possible
+      // Also mirror to Firestore immediately
       await syncItemToFirestore(updated).catch(e => console.warn(e));
+
+      try {
+        await apiRequest<{ item: Item }>(`/api/admin/items/${editingItem.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch (e) {
+        console.warn('Backend item update notice:', e);
+      }
+
+      // Update local state immediately
+      setItems(prev => prev.map(it => it.id === editingItem.id ? updated : it));
 
       showNotification(`"${updated.title}" updated successfully!`);
       setEditingItem(null);
       setEditDocFile(null);
-      await loadAdminData(false);
       await refreshItems();
     } catch (err: any) {
       showNotification(err.message, 'error');
@@ -421,6 +529,18 @@ export const AdminPortalPage: React.FC = () => {
   const totalRevenue = orders
     .filter(o => o.status === 'verified')
     .reduce((sum, o) => sum + (o.item?.price || 0), 0);
+
+  const filteredUsers = React.useMemo(() => {
+    if (!userSearchQuery.trim()) return users;
+    const q = userSearchQuery.toLowerCase();
+    return users.filter(
+      u =>
+        (u.name && u.name.toLowerCase().includes(q)) ||
+        (u.phone && u.phone.toLowerCase().includes(q)) ||
+        (u.email && u.email.toLowerCase().includes(q)) ||
+        (u.id && u.id.toLowerCase().includes(q))
+    );
+  }, [users, userSearchQuery]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
@@ -495,15 +615,30 @@ export const AdminPortalPage: React.FC = () => {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        {/* Metric Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Metric Cards - 5 Key Indicators */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-4">
           <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-1">
             <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Items</span>
             <div className="text-2xl font-extrabold text-slate-900">{items.length}</div>
             <span className="text-[11px] text-slate-500">Documents & Websites</span>
           </div>
 
-          <div className="p-4 rounded-2xl bg-white border border-amber-200 shadow-xs space-y-1">
+          <div
+            onClick={() => setActiveTab('users')}
+            className="p-4 rounded-2xl bg-white border border-indigo-200 shadow-xs space-y-1 cursor-pointer hover:border-indigo-400 transition-colors"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-indigo-700 uppercase tracking-wider">Registered Users</span>
+              <Users className="w-4 h-4 text-indigo-600" />
+            </div>
+            <div className="text-2xl font-extrabold text-indigo-900">{users.length}</div>
+            <span className="text-[11px] text-indigo-600">Active Customer Accounts</span>
+          </div>
+
+          <div
+            onClick={() => setActiveTab('orders')}
+            className="p-4 rounded-2xl bg-white border border-amber-200 shadow-xs space-y-1 cursor-pointer hover:border-amber-400 transition-colors"
+          >
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">Pending Orders</span>
               {pendingOrders > 0 && (
@@ -560,6 +695,20 @@ export const AdminPortalPage: React.FC = () => {
           >
             <FileText className="w-4 h-4" />
             <span>Documents & Websites ({items.length})</span>
+          </button>
+
+          <button
+            type="button"
+            id="tab-users"
+            onClick={() => setActiveTab('users')}
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+              activeTab === 'users'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'bg-white text-slate-600 hover:text-slate-900 border border-slate-200'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>Registered Users ({users.length})</span>
           </button>
 
           <button
@@ -869,6 +1018,166 @@ export const AdminPortalPage: React.FC = () => {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* ================= TAB: REGISTERED USERS & CUSTOMERS ================= */}
+        {activeTab === 'users' && (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+              <div>
+                <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <Users className="w-5 h-5 text-indigo-600" />
+                  <span>Registered Users & Customer Accounts ({users.length})</span>
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Real-time list of all users registered on the platform with direct contact details and purchase activity.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={userSearchQuery}
+                    onChange={e => setUserSearchQuery(e.target.value)}
+                    placeholder="Search name, phone, email..."
+                    className="pl-9 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl focus:border-slate-800 w-48 sm:w-64"
+                  />
+                  {userSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setUserSearchQuery('')}
+                      className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => loadAdminData(false)}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 flex items-center gap-1.5 shadow-xs cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Users List */}
+            {filteredUsers.length === 0 ? (
+              <div className="p-12 text-center bg-white border border-slate-200 rounded-2xl">
+                <Users className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                <h3 className="text-sm font-bold text-slate-700">No users found</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  {userSearchQuery ? 'No users match your search query.' : 'No registered users in the database yet.'}
+                </p>
+              </div>
+            ) : (
+              <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-slate-600">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 uppercase font-bold text-[10px] tracking-wider">
+                      <tr>
+                        <th className="py-3 px-4">User</th>
+                        <th className="py-3 px-4">Phone / Contact</th>
+                        <th className="py-3 px-4">Email Address</th>
+                        <th className="py-3 px-4">Registered On</th>
+                        <th className="py-3 px-4">Orders Placed</th>
+                        <th className="py-3 px-4 text-right">Direct Contact</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredUsers.map((u) => {
+                        const userOrdersList = orders.filter(
+                          o => o.user_id === u.id || o.user?.phone === u.phone || (u.email && o.user?.email === u.email)
+                        );
+                        const cleanDigits = (u.phone || '').replace(/\D/g, '');
+                        const waNumber = cleanDigits.startsWith('92')
+                          ? cleanDigits
+                          : cleanDigits.startsWith('0')
+                          ? `92${cleanDigits.slice(1)}`
+                          : cleanDigits;
+
+                        return (
+                          <tr key={u.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="py-3.5 px-4">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-700 flex items-center justify-center font-bold text-xs uppercase">
+                                  {u.name ? u.name.charAt(0) : 'U'}
+                                </div>
+                                <div>
+                                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                                    <span>{u.name || 'Unnamed Customer'}</span>
+                                    {isAdminIdentifier(u.email) && (
+                                      <span className="px-1.5 py-0.2 rounded text-[9px] bg-amber-100 text-amber-800 font-bold border border-amber-200">
+                                        ADMIN
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 font-mono">
+                                    ID: {u.id}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="py-3.5 px-4 font-mono font-medium text-slate-800">
+                              {u.phone || 'N/A'}
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-600 font-mono">
+                              {u.email || 'N/A'}
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-500 whitespace-nowrap">
+                              {u.created_at
+                                ? new Date(u.created_at).toLocaleDateString(undefined, {
+                                    year: 'numeric',
+                                    month: 'short',
+                                    day: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })
+                                : 'Recent'}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    userOrdersList.length > 0
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                      : 'bg-slate-100 text-slate-600'
+                                  }`}
+                                >
+                                  {userOrdersList.length} Order{userOrdersList.length === 1 ? '' : 's'}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="py-3.5 px-4 text-right">
+                              {waNumber && waNumber.length >= 10 ? (
+                                <a
+                                  href={`https://wa.me/${waNumber}?text=${encodeURIComponent(
+                                    `Hello ${u.name || 'Customer'}, thank you for visiting our Store!`
+                                  )}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 font-bold text-[11px] transition-colors"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5" />
+                                  <span>WhatsApp</span>
+                                </a>
+                              ) : (
+                                <span className="text-[11px] text-slate-400">No WhatsApp</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
