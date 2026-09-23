@@ -279,7 +279,7 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
       }
     }
 
-    // If unauthorized-domain or invalid action error persists, format helpful error message
+    // If unauthorized-domain or invalid action error persists, format helpful error code
     if (
       isDomainOrPopupIssue ||
       popupError?.code === 'auth/unauthorized-domain' ||
@@ -287,7 +287,7 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
     ) {
       const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
       const customErr = new Error(
-        `Google Sign-In is restricted for domain "${currentHost}". Please use Direct Email / Phone Sign-In.`
+        `Google popup authentication is not configured for domain "${currentHost}".`
       );
       (customErr as any).code = 'auth/unauthorized-domain';
       (customErr as any).hostname = currentHost;
