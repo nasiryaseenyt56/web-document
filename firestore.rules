@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Administrator verification
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email != null && request.auth.token.email == 'nasiryaseen2011@gmail.com') ||
+        (request.auth.token.email != null && request.auth.token.email == 'admin@store.com')
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && request.auth.uid == userId &&
+        incoming().keys().hasAll(['id', 'name', 'phone', 'email', 'created_at']) &&
+        incoming().name is string && incoming().name.size() <= 100 &&
+        incoming().phone is string && incoming().phone.size() <= 25 &&
+        incoming().email is string && incoming().email.size() <= 100 &&
+        (!('role' in incoming()) || incoming().role == 'customer' || isAdmin());
+      allow update: if (isOwner(userId) || isAdmin()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'email']) &&
+        incoming().name is string && incoming().name.size() <= 100 &&
+        incoming().phone is string && incoming().phone.size() <= 25;
+      allow delete: if isAdmin();
+    }
+
+    // Admins Registry
+    match /admins/{adminId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Items (Documents & Websites)
+    match /items/{itemId} {
+      allow get: if resource.data.status == 'published' || isAdmin();
+      allow list: if resource.data.status == 'published' || isAdmin();
+      allow create: if isAdmin() &&
+        incoming().keys().hasAll(['id', 'type', 'title', 'description', 'price', 'payment_type', 'status', 'created_at']) &&
+        incoming().type in ['document', 'website'] &&
+        incoming().payment_type in ['pay', 'free'] &&
+        incoming().status in ['published', 'draft'] &&
+        incoming().title is string && incoming().title.size() <= 200 &&
+        incoming().description is string && incoming().description.size() <= 2000 &&
+        incoming().price is number;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Customer Orders
+    match /orders/{orderId} {
+      allow get: if isSignedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        resource.data.user_id == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        incoming().user_id == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().transfer_id is string && incoming().transfer_id.size() <= 100 &&
+        incoming().sender_name is string && incoming().sender_name.size() <= 100;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Store Settings
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

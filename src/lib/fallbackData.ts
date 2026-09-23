@@ -1,0 +1,61 @@
+import type { Item, StoreSettings } from '../types.ts';
+
+export const INITIAL_ITEMS: Item[] = [
+  {
+    id: 'item_doc_1',
+    type: 'document',
+    title: 'Full-Stack Architecture & Cloud Guide 2026',
+    description: 'Comprehensive 85-page architectural handbook covering modern system design, microservices, secure payment workflows, and container deployment.',
+    file_url: '/api/download/item_doc_1',
+    file_name: 'fullstack-architecture-guide-2026.pdf',
+    file_size: 2450000,
+    price: 1500,
+    payment_type: 'pay',
+    account_numbers: 'JazzCash / EasyPaisa: 03060217399\nAccount Title: Nasir Yaseen\nBank: Meezan Bank Ltd\nAccount No: 01020102938101\nIBAN: PK72MEZN0001020102938101',
+    status: 'published',
+    created_at: '2026-09-01T10:00:00.000Z',
+  },
+  {
+    id: 'item_doc_2',
+    type: 'document',
+    title: 'Essential Web Dev Cheat Sheet & Checklist',
+    description: 'Quick reference guide with production checklist, Tailwind CSS tokens, and TypeScript best practices for rapid web app delivery.',
+    file_url: '/api/download/item_doc_2',
+    file_name: 'web-dev-cheat-sheet.pdf',
+    file_size: 890000,
+    price: 0,
+    payment_type: 'free',
+    account_numbers: '',
+    status: 'published',
+    created_at: '2026-09-02T10:00:00.000Z',
+  },
+  {
+    id: 'item_web_1',
+    type: 'website',
+    title: 'DevMastery Pro Interactive Code Portal',
+    description: 'Exclusive access to our members-only web portal featuring interactive system design simulations, video case studies, and live dev toolkits.',
+    website_url: 'https://github.com',
+    price: 3000,
+    payment_type: 'pay',
+    account_numbers: 'JazzCash / EasyPaisa: 03060217399\nAccount Title: Nasir Yaseen\nBank: Meezan Bank Ltd\nAccount No: 01020102938101\nIBAN: PK72MEZN0001020102938101',
+    status: 'published',
+    created_at: '2026-09-03T10:00:00.000Z',
+  },
+  {
+    id: 'item_web_2',
+    type: 'website',
+    title: 'Open Source Community Forum & Discord Hub',
+    description: 'Join our public knowledge-sharing portal and forum for real-time collaboration with fellow software engineers and developers.',
+    website_url: 'https://news.ycombinator.com',
+    price: 0,
+    payment_type: 'free',
+    account_numbers: '',
+    status: 'published',
+    created_at: '2026-09-04T10:00:00.000Z',
+  },
+];
+
+export const INITIAL_SETTINGS: StoreSettings = {
+  admin_whatsapp: '923060217399',
+  default_account_numbers: 'JazzCash / EasyPaisa: 03060217399\nAccount Title: Nasir Yaseen\nBank: Meezan Bank Ltd\nAccount No: 01020102938101\nIBAN: PK72MEZN0001020102938101',
+};

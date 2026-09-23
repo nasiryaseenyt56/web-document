@@ -1,0 +1,8 @@
+{
+  "name": "Remix doc_web_store",
+  "description": "A full-stack platform to publish, purchase, verify, and access digital documents and websites with admin verification and order tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
